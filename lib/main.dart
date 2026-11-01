@@ -1,10 +1,46 @@
-import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'auth_gate.dart';
 import 'models/ledger.dart';
+import 'services/cloud_ledger.dart';
 import 'services/weather.dart';
 
-void main() => runApp(const MyMoneyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (kIsWeb) {
+    runApp(const MyMoneyApp(preview: true));
+    return;
+  }
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    runApp(FirebaseSetupApp(message: '$e'));
+    return;
+  }
+  runApp(const MyMoneyApp());
+}
+
+class FirebaseSetupApp extends StatelessWidget {
+  const FirebaseSetupApp({super.key, required this.message});
+  final String message;
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    home: Scaffold(
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(child: Text(
+          'MyMoney could not reach Firebase.\n\n'
+          'Put google-services.json in android/app/ (package name com.example.mymoney), '
+          'then stop the app and run it again.\n\n$message',
+          textAlign: TextAlign.center,
+        )),
+      ),
+    ),
+  );
+}
 
 class Palette {
   static const primary = Color(0xFF167D68), background = Color(0xFFF8FAF7),
@@ -17,7 +53,8 @@ String money(int value) {
 }
 
 class MyMoneyApp extends StatelessWidget {
-  const MyMoneyApp({super.key});
+  const MyMoneyApp({super.key, this.preview = false});
+  final bool preview;
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false, title: 'MyMoney',
@@ -29,71 +66,115 @@ class MyMoneyApp extends StatelessWidget {
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)),
       cardTheme: CardThemeData(color: Colors.white, elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)))),
-    home: const FinanceShell());
+    home: preview ? const FinanceShell(preview: true) : const AuthGate(home: FinanceShell()));
 }
 
 class FinanceShell extends StatefulWidget {
-  const FinanceShell({super.key});
+  const FinanceShell({super.key, this.preview = false});
+  final bool preview;
   @override
   State<FinanceShell> createState() => _FinanceShellState();
 }
 class _FinanceShellState extends State<FinanceShell> {
-  MoneyLedger ledger = _starterLedger();
-  static MoneyLedger _starterLedger() {
-    final l = MoneyLedger(opening: {'Cash': 18000, 'MoMo': 57000, 'Bank': 110000});
-    l.add('expense', 'Cash', 1200, category: 'Transport', note: 'Bus fare');
-    l.add('income', 'MoMo', 10000, note: 'Allowance');
-    return l;
-  }
   int index = 0;
-  bool ready = false;
-  static const key = 'mymoney_ledger_v1';
-  @override
-  void initState() { super.initState(); _load(); }
-  Future<void> _load() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getString(key);
-      if (saved != null) ledger = MoneyLedger.decode(saved);
-    } catch (e) {
-      if (mounted) WidgetsBinding.instance.addPostFrameCallback((_) => _message('Saved data could not be read: $e'));
-    }
-    if (mounted) setState(() => ready = true);
+  late final Stream<MoneyLedger> _ledgerStream = openLedger();
+  late MoneyLedger _local = _sampleLedger();
+
+  static MoneyLedger _sampleLedger() {
+    final ledger = MoneyLedger(opening: {'Cash': 18000, 'MoMo': 57000, 'Bank': 110000});
+    ledger.add('expense', 'Cash', 1200, category: 'Transport', note: 'Bus fare');
+    ledger.add('income', 'MoMo', 10000, note: 'Allowance');
+    return ledger;
   }
-  void _message(String text) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-  }
-  Future<void> _change(void Function() action, {String? success}) async {
+
+  Future<bool> _change(void Function() action, {String? success}) async {
     try {
       setState(action);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(key, ledger.encode());
       if (success != null) _message(success);
+      return true;
     } on LedgerException catch (e) {
       _message(e.message);
     } catch (e) {
       _message('Could not save this change: $e');
     }
+    return false;
   }
+
+  void _message(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<bool> _run(Future<void> Function() action, {String? success}) async {
+    try {
+      await action();
+      if (success != null) _message(success);
+      return true;
+    } on LedgerException catch (e) {
+      _message(e.message);
+    } catch (e) {
+      _message('Could not save this change: $e');
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.preview) return _shell(_local, preview: true);
+    return StreamBuilder<MoneyLedger>(
+      stream: _ledgerStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError && !snapshot.hasData) {
+          return Scaffold(
+            appBar: _bar(),
+            body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(
+              'Could not load your ledger.\n${snapshot.error}', textAlign: TextAlign.center))),
+          );
+        }
+        if (!snapshot.hasData) {
+          return Scaffold(appBar: _bar(), body: const Center(child: CircularProgressIndicator()));
+        }
+        return _shell(snapshot.data!);
+      },
+    );
+  }
+
+  Widget _shell(MoneyLedger ledger, {bool preview = false}) {
     final pages = [
       HomePage(ledger: ledger, onNavigate: (i) => setState(() => index = i)),
-      ActivityPage(ledger: ledger, delete: (id) => _change(() => ledger.delete(id), success: 'Transaction deleted')),
-      AddPage(ledger: ledger, submit: (kind, account, amount, category, person, note) =>
-        _change(() => ledger.add(kind, account, amount, category: category, person: person, note: note),
-          success: 'Transaction recorded')),
-      GoalsPage(ledger: ledger, createGoal: (name, target) => _change(() => ledger.createGoal(name, target), success: 'Goal added'),
-        saveGoal: (id, amount) => _change(() => ledger.saveForGoal(id, amount), success: 'Savings reserved'),
-        setBudget: (category, amount) => _change(() => ledger.setBudget(category, amount), success: 'Budget updated')),
+      ActivityPage(
+        ledger: ledger,
+        delete: (id) => preview
+            ? _change(() => _local.delete(id), success: 'Transaction deleted')
+            : _run(() => deleteEvent(ledger, id), success: 'Transaction deleted'),
+        edit: (id, kind, account, amount, category, person, note) => preview
+            ? _change(() => _local.replace(id, kind: kind, account: account, amount: amount,
+                category: category, person: person, note: note), success: 'Transaction updated')
+            : _run(() => updateEvent(ledger, id, kind: kind, account: account, amount: amount,
+                category: category, person: person, note: note), success: 'Transaction updated'),
+      ),
+      AddPage(ledger: ledger, submit: (kind, account, amount, category, person, note) => preview
+          ? _change(() => _local.add(kind, account, amount, category: category, person: person, note: note),
+              success: 'Transaction recorded')
+          : _run(() => addEvent(ledger, kind, account, amount, category: category, person: person, note: note),
+              success: 'Transaction recorded')),
+      GoalsPage(
+        ledger: ledger,
+        createGoal: (name, target) => preview
+            ? _change(() => _local.createGoal(name, target), success: 'Goal added')
+            : _run(() => createGoalCloud(ledger, name, target), success: 'Goal added'),
+        saveGoal: (id, amount) => preview
+            ? _change(() => _local.saveForGoal(id, amount), success: 'Savings reserved')
+            : _run(() => saveGoalCloud(ledger, id, amount), success: 'Savings reserved'),
+        setBudget: (category, amount) => preview
+            ? _change(() => _local.setBudget(category, amount), success: 'Budget updated')
+            : _run(() => setBudgetCloud(ledger, category, amount), success: 'Budget updated'),
+      ),
       InsightsPage(ledger: ledger),
     ];
     return Scaffold(
-      appBar: AppBar(title: const Text('MyMoney', style: TextStyle(fontWeight: FontWeight.w800, color: Palette.ink)),
-        actions: [IconButton(tooltip: 'Kigali weather', icon: const Icon(Icons.cloud_outlined), onPressed: () =>
-          Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const WeatherPage())))]),
-      body: ready ? SafeArea(child: pages[index]) : const Center(child: CircularProgressIndicator()),
+      appBar: _bar(preview: preview),
+      body: SafeArea(child: pages[index]),
       bottomNavigationBar: NavigationBar(selectedIndex: index, onDestinationSelected: (i) => setState(() => index = i),
         backgroundColor: Colors.white, indicatorColor: Palette.secondary, destinations: const [
           NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
@@ -101,8 +182,23 @@ class _FinanceShellState extends State<FinanceShell> {
           NavigationDestination(icon: Icon(Icons.add_circle_outline), label: 'Add'),
           NavigationDestination(icon: Icon(Icons.flag_outlined), label: 'Goals'),
           NavigationDestination(icon: Icon(Icons.bar_chart_outlined), label: 'Insights'),
-        ]));
+        ]),
+    );
   }
+
+  AppBar _bar({bool preview = false}) => AppBar(
+    title: Text(preview ? 'MyMoney · browser preview' : 'MyMoney',
+        style: const TextStyle(fontWeight: FontWeight.w800, color: Palette.ink)),
+    actions: [
+      IconButton(tooltip: 'Kigali weather', icon: const Icon(Icons.cloud_outlined), onPressed: () =>
+        Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const WeatherPage()))),
+      if (!preview) IconButton(
+        icon: const Icon(Icons.logout),
+        tooltip: 'Log out',
+        onPressed: () => FirebaseAuth.instance.signOut(),
+      ),
+    ],
+  );
 }
 
 class Panel extends StatelessWidget {
@@ -172,29 +268,39 @@ class HomePage extends StatelessWidget {
 }
 
 class EventTile extends StatelessWidget {
-  const EventTile({super.key, required this.event, this.onDelete});
+  const EventTile({super.key, required this.event, this.onDelete, this.onEdit});
   final MoneyEvent event;
   final VoidCallback? onDelete;
+  final VoidCallback? onEdit;
   @override
   Widget build(BuildContext context) {
     final positive = event.kind == 'income' || event.kind == 'hold';
     final title = event.kind == 'hold' ? 'Held for ${event.person}' : event.kind == 'return'
       ? 'Returned to ${event.person}' : event.note.isNotEmpty ? event.note : event.kind == 'income' ? 'Income' : event.category;
-    return Card(child: ListTile(leading: CircleAvatar(backgroundColor: Palette.secondary,
-      child: Icon(positive ? Icons.south_west : Icons.north_east, color: Palette.primary)),
+    return Card(child: ListTile(
+      onTap: onEdit,
+      leading: CircleAvatar(backgroundColor: Palette.secondary,
+        child: Icon(positive ? Icons.south_west : Icons.north_east, color: Palette.primary)),
       title: Text(title), subtitle: Text('${event.account} · ${event.kind} · ${event.date.day}/${event.date.month}'),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         Text('${positive ? '+' : '−'}${money(event.amount)}', style: TextStyle(fontWeight: FontWeight.w700,
           color: positive ? Palette.income : Palette.expense)),
-        if (onDelete != null) IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: onDelete),
+        if (onDelete != null) IconButton(
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.delete_outline),
+          tooltip: 'Delete',
+          onPressed: onDelete,
+        ),
       ])));
   }
 }
 
+typedef EditEvent = Future<bool> Function(String id, String kind, String account, int amount, String category, String person, String note);
 class ActivityPage extends StatefulWidget {
-  const ActivityPage({super.key, required this.ledger, required this.delete});
+  const ActivityPage({super.key, required this.ledger, required this.delete, required this.edit});
   final MoneyLedger ledger;
-  final ValueChanged<String> delete;
+  final Future<bool> Function(String id) delete;
+  final EditEvent edit;
   @override State<ActivityPage> createState() => _ActivityPageState();
 }
 class _ActivityPageState extends State<ActivityPage> {
@@ -204,7 +310,7 @@ class _ActivityPageState extends State<ActivityPage> {
       (filter == 'All' || e.kind == filter.toLowerCase()) &&
       ('${e.kind} ${e.person} ${e.category} ${e.account} ${e.note}'.toLowerCase()).contains(query.toLowerCase())).toList();
     return ListView(padding: const EdgeInsets.all(18), children: [
-      const Heading('Activity', subtitle: 'Every movement has a story.'), const SizedBox(height: 12),
+      const Heading('Activity', subtitle: 'Tap an entry to edit it.'), const SizedBox(height: 12),
       TextField(decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search transactions'),
         onChanged: (v) => setState(() => query = v)), const SizedBox(height: 10),
       SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ['All', 'Income', 'Expense', 'Hold', 'Return']
@@ -212,30 +318,63 @@ class _ActivityPageState extends State<ActivityPage> {
           selected: filter == x, onSelected: (_) => setState(() => filter = x)))).toList())),
       const SizedBox(height: 12),
       if (data.isEmpty) const Panel(child: Text('No matching transactions yet.')),
-      ...data.map((e) => EventTile(event: e, onDelete: () async {
-        final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
-          title: const Text('Delete this entry?'), content: const Text('This changes your balances and reports.'),
-          actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete'))]));
-        if (ok == true) widget.delete(e.id);
-      })),
+      ...data.map((e) => EventTile(
+        event: e,
+        onEdit: () {
+          Navigator.push(context, MaterialPageRoute<void>(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Edit transaction')),
+            body: AddPage(
+              ledger: widget.ledger,
+              existing: e,
+              submit: (kind, account, amount, category, person, note) =>
+                  widget.edit(e.id, kind, account, amount, category, person, note),
+            ),
+          )));
+        },
+        onDelete: () async {
+          final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+            title: const Text('Delete this entry?'),
+            content: const Text('This changes your balances and reports. This cannot be undone.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+            ],
+          ));
+          if (ok == true) widget.delete(e.id);
+        },
+      )),
     ]);
   }
 }
 
-typedef SubmitEvent = void Function(String kind, String account, int amount, String category, String person, String note);
+typedef SubmitEvent = Future<bool> Function(String kind, String account, int amount, String category, String person, String note);
 class AddPage extends StatefulWidget {
-  const AddPage({super.key, required this.ledger, required this.submit});
+  const AddPage({super.key, required this.ledger, required this.submit, this.existing});
   final MoneyLedger ledger;
   final SubmitEvent submit;
+  final MoneyEvent? existing;
   @override State<AddPage> createState() => _AddPageState();
 }
 class _AddPageState extends State<AddPage> {
   String kind = 'expense', account = 'Cash', category = 'Food';
   final amount = TextEditingController(), person = TextEditingController(), note = TextEditingController();
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    if (existing == null) return;
+    kind = existing.kind;
+    account = widget.ledger.opening.containsKey(existing.account) ? existing.account : widget.ledger.opening.keys.first;
+    category = MoneyLedger.categories.contains(existing.category) ? existing.category : MoneyLedger.categories.first;
+    amount.text = '${existing.amount}';
+    person.text = existing.person;
+    note.text = existing.note;
+  }
   @override void dispose() { amount.dispose(); person.dispose(); note.dispose(); super.dispose(); }
   @override Widget build(BuildContext context) => ListView(padding: const EdgeInsets.all(18), children: [
-    const Heading('Add transaction', subtitle: 'Make every franc count.'), const SizedBox(height: 14),
+    Heading(widget.existing == null ? 'Add transaction' : 'Edit transaction',
+      subtitle: widget.existing == null ? 'Make every franc count.' : 'Correct this entry. Balances update live.'),
+    const SizedBox(height: 14),
     DropdownButtonFormField<String>(initialValue: kind, decoration: const InputDecoration(labelText: 'Movement type'),
       items: const ['expense', 'income', 'hold', 'return'].map((x) => DropdownMenuItem(value: x, child: Text(x.toUpperCase()))).toList(),
       onChanged: (v) => setState(() => kind = v!)), const SizedBox(height: 12),
@@ -252,29 +391,31 @@ class _AddPageState extends State<AddPage> {
       decoration: const InputDecoration(labelText: 'Whose money? (name)')), const SizedBox(height: 12)],
     TextField(controller: note, decoration: const InputDecoration(labelText: 'Description (optional)')),
     const SizedBox(height: 18),
-    FilledButton.icon(onPressed: () {
+    FilledButton.icon(onPressed: () async {
       final value = int.tryParse(amount.text.trim());
       if (value == null || value <= 0) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a whole number greater than zero')));
         return;
       }
-      widget.submit(kind, account, value, category, person.text.trim(), note.text.trim());
-    }, icon: const Icon(Icons.check_circle_outline), label: const Text('Record transaction')),
+      final saved = await widget.submit(kind, account, value, category, person.text.trim(), note.text.trim());
+      if (saved && widget.existing != null && context.mounted) Navigator.pop(context);
+    }, icon: const Icon(Icons.check_circle_outline),
+      label: Text(widget.existing == null ? 'Record transaction' : 'Save changes')),
     const SizedBox(height: 12),
     const Panel(color: Palette.secondary, child: Text('Money received for someone else is never counted as your personal income. Return it using the Return type.')),
   ]);
 }
 
-typedef GoalCreate = void Function(String name, int target);
-typedef GoalSave = void Function(String id, int amount);
-typedef BudgetSet = void Function(String category, int amount);
+typedef GoalCreate = Future<bool> Function(String name, int target);
+typedef GoalSave = Future<bool> Function(String id, int amount);
+typedef BudgetSet = Future<bool> Function(String category, int amount);
 class GoalsPage extends StatelessWidget {
   const GoalsPage({super.key, required this.ledger, required this.createGoal, required this.saveGoal, required this.setBudget});
   final MoneyLedger ledger;
   final GoalCreate createGoal;
   final GoalSave saveGoal;
   final BudgetSet setBudget;
-  Future<void> _input(BuildContext context, String heading, void Function(String, int) onDone, {String? initial}) async {
+  Future<void> _input(BuildContext context, String heading, Future<bool> Function(String, int) onDone, {String? initial}) async {
     final name = TextEditingController(text: initial ?? ''); final amount = TextEditingController();
     final result = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: Text(heading), content:
       Column(mainAxisSize: MainAxisSize.min, children: [if (initial == null) TextField(controller: name,

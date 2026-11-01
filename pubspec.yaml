@@ -1,5 +1,5 @@
 name: mymoney
-description: A thoughtful daily money tracker built for the Week 2 mini project and Session 5.
+description: A daily money tracker that signs each user in and stores their ledger in Cloud Firestore.
 publish_to: none
 version: 1.0.0+1
 environment:
@@ -7,8 +7,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  shared_preferences: ^2.5.3
   http: ^1.4.0
+  firebase_core: ^3.15.2
+  firebase_auth: ^5.7.0
+  cloud_firestore: ^5.6.12
   cupertino_icons: ^1.0.8
 dev_dependencies:
   flutter_test:

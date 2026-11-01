@@ -1,10 +1,10 @@
-# Evidence to capture from your own running app
+# Screenshots for Session 6
 
-Session 5 requires four real screenshots. Do **not** replace them with designs, fabricated examples, or copied screenshots.
+Capture these four images from the real running app and the Firebase console. The file names must match exactly.
 
-- `before.png` — after adding transactions or changing goals, BEFORE closing the application.
-- `after.png` — same state AFTER stopping and running the app again (proves shared_preferences works).
-- `api.png` — tap the cloud in the app bar and capture live Kigali weather data.
-- `no-internet.png` — disable network access, open the weather page, capture the error and Retry button.
+- `login.png` — the login screen, with MyMoney on it.
+- `console.png` — Firebase console, Firestore Database, open on your data: `users` → your id → `events` (or `goals` / `settings`).
+- `live.png` — add a document in the Firestore console while the app is open. The screenshot shows the new item in the app, without restarting it.
+- `denied.png` — signed in with a second account. That account sees its own sample data, not the first account's entries.
 
-Place the actual PNG files in this folder before pushing your repo.
+Place the PNG files in this folder. Do not invent them.

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "291542936552",
+    "project_id": "mymoney-e87d4",
+    "storage_bucket": "mymoney-e87d4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:291542936552:android:980732ee005ebd751c525d",
+        "android_client_info": {
+          "package_name": "com.example.mymoney"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsQOpu51hP4JnNS4gERg-hYkZ58IoasVg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -103,6 +103,32 @@ class MoneyLedger {
     }
   }
   void add(String kind, String account, int amount, {String category = '', String person = '', String note = '', DateTime? date}) {
+    events.add(_makeEvent(kind, account, amount, category: category, person: person, note: note, date: date, id: _id()));
+  }
+
+  /// Replaces one entry, then refuses the change if any later balance would go invalid.
+  void replace(String id, {required String kind, required String account, required int amount,
+      String category = '', String person = '', String note = '', DateTime? date}) {
+    final index = events.indexWhere((e) => e.id == id);
+    if (index < 0) throw LedgerException('Transaction not found');
+    final old = events.removeAt(index);
+    try {
+      final event = _makeEvent(kind, account, amount, category: category, person: person,
+          note: note, date: date ?? old.date, id: id);
+      events.insert(index, event);
+      if (!_historyValid()) {
+        throw LedgerException('This change would make an account or held-money balance invalid');
+      }
+    } catch (e) {
+      events.removeWhere((event) => event.id == id);
+      events.insert(index, old);
+      if (e is LedgerException) rethrow;
+      throw LedgerException('$e');
+    }
+  }
+
+  MoneyEvent _makeEvent(String kind, String account, int amount,
+      {String category = '', String person = '', String note = '', DateTime? date, required String id}) {
     _account(account); _valid(amount);
     if (kind == 'expense') {
       if (category.trim().isEmpty) throw LedgerException('Select a category');
@@ -116,8 +142,8 @@ class MoneyLedger {
     } else if (kind != 'income') {
       throw LedgerException('Unknown transaction type');
     }
-    events.add(MoneyEvent(id: _id(), kind: kind, account: account, amount: amount,
-      category: category.trim(), person: person.trim(), note: note.trim(), date: date ?? DateTime.now()));
+    return MoneyEvent(id: id, kind: kind, account: account, amount: amount,
+      category: category.trim(), person: person.trim(), note: note.trim(), date: date ?? DateTime.now());
   }
   void delete(String id) {
     final index = events.indexWhere((e) => e.id == id);
