@@ -48,6 +48,18 @@ void main() {
     expect(() => l.delete(id), throwsA(isA<LedgerException>()));
     expect(l.events.length, 2);
   });
+  test('editing an entry recalculates and an invalid edit is refused', () {
+    final l = MoneyLedger();
+    l.add('income', 'Cash', 5000);
+    l.add('expense', 'Cash', 1000, category: 'Food');
+    final id = l.events.last.id;
+    l.replace(id, kind: 'expense', account: 'Cash', amount: 2000, category: 'Food');
+    expect(l.balance('Cash'), 3000);
+    expect(() => l.replace(id, kind: 'expense', account: 'Cash', amount: 9000, category: 'Food'),
+        throwsA(isA<LedgerException>()));
+    expect(l.balance('Cash'), 3000);
+    expect(l.events.last.amount, 2000);
+  });
   test('valid deletions recalculate totals', () {
     final l = MoneyLedger();
     l.add('income', 'Cash', 9000);
